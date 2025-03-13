@@ -123,10 +123,7 @@ gdbserver: build/kernel
 gdbclient:
 	$(GDB) -ex "target remote localhost:15234"
 
-# CHAPTER ?= $(shell git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]')
-CHAPTER ?= 4
-
-BASE ?= 0
+CHAPTER ?= $(shell git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]')
 
 user:
 	make -C user CHAPTER=$(CHAPTER) BASE=$(BASE)
