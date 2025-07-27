@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "defs.h"
 #include "loader.h"
+#include "proc.h"
 #include "syscall_ids.h"
 #include "timer.h"
 #include "trap.h"
@@ -40,6 +41,21 @@ uint64 sys_gettimeofday(TimeVal *val, int _tz)
 * LAB1: you may need to define sys_trace here
 */
 
+int sys_trace(int trace_request, unsigned long id, uint8 data)
+{
+	switch (trace_request) {
+	case 0:
+		return *(uint8 *)id;
+	case 1:
+		*(uint8 *)id = data;
+		return 0;
+	case 2:
+		return curr_proc()->syscall_counter[id];
+	default:
+		return -1;
+	}
+}
+
 extern char trap_page[];
 
 void syscall()
@@ -53,6 +69,7 @@ void syscall()
 	/*
 	* LAB1: you may need to update syscall counter here
 	*/
+	curr_proc()->syscall_counter[id]++;
 	switch (id) {
 	case SYS_write:
 		ret = sys_write(args[0], (char *)args[1], args[2]);
@@ -66,9 +83,12 @@ void syscall()
 	case SYS_gettimeofday:
 		ret = sys_gettimeofday((TimeVal *)args[0], args[1]);
 		break;
-	/*
+		/*
 	* LAB1: you may need to add SYS_trace case here
 	*/
+	case SYS_trace:
+		ret = sys_trace((int)args[0], (unsigned long)args[1], (uint8)args[2]);
+		break;
 	default:
 		ret = -1;
 		errorf("unknown syscall %d", id);

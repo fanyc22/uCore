@@ -2,6 +2,7 @@
 #define PROC_H
 
 #include "types.h"
+#include "syscall_ids.h"
 
 #define NPROC (16)
 
@@ -38,6 +39,7 @@ struct proc {
 	/*
 	* LAB1: you may need to add some new fields here
 	*/
+	uint64 syscall_counter[__NR_syscalls];
 };
 
 struct proc *curr_proc();
