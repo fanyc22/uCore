@@ -1,11 +1,15 @@
 #include "syscall.h"
 #include "defs.h"
 #include "loader.h"
+#include "log.h"
 #include "proc.h"
 #include "syscall_ids.h"
 #include "timer.h"
 #include "trap.h"
 #include "proc.h"
+#include "riscv.h"
+#include "types.h"
+#include "vm.h"
 
 uint64 sys_write(int fd, uint64 va, uint len)
 {
@@ -34,11 +38,21 @@ uint64 sys_sched_yield()
 	return 0;
 }
 
-uint64 sys_gettimeofday(TimeVal *val, int _tz) // TODO: implement sys_gettimeofday in pagetable. (VA to PA)
+uint64 sys_gettimeofday(
+	TimeVal *val,
+	int _tz) // TODO: implement sys_gettimeofday in pagetable. (VA to PA)
 {
 	// YOUR CODE
-	val->sec = 0;
-	val->usec = 0;
+	TimeVal kval;
+	kval.sec = 0;
+	kval.usec = 0;
+	uint64 cycle = get_cycle();
+	kval.sec = cycle / CPU_FREQ;
+	kval.usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
+	struct proc *p = curr_proc();
+	copyout(p->pagetable, (uint64)val, (char *)&kval, sizeof(TimeVal));
+	// val->sec = 0;
+	// val->usec = 0;
 
 	/* The code in `ch3` will leads to memory bugs*/
 
@@ -51,14 +65,18 @@ uint64 sys_gettimeofday(TimeVal *val, int _tz) // TODO: implement sys_gettimeofd
 uint64 sys_sbrk(int n)
 {
 	uint64 addr;
-        struct proc *p = curr_proc();
-        addr = p->program_brk;
-        if(growproc(n) < 0)
-                return -1;
-        return addr;	
+	struct proc *p = curr_proc();
+	addr = p->program_brk;
+	if (growproc(n) < 0)
+		return -1;
+	return addr;
 }
 
-
+uint64 sys_getpid()
+{
+	struct proc *p = curr_proc();
+	return p->pid;
+}
 
 // TODO: add support for mmap and munmap syscall.
 // hint: read through docstrings in vm.c. Watching CH4 video may also help.
@@ -69,17 +87,81 @@ uint64 sys_sbrk(int n)
 
 int sys_trace(int trace_request, unsigned long id, uint8 data)
 {
-	switch (trace_request) {
+	struct proc *p = curr_proc();
+	uint64 kid = useraddr(p->pagetable, id);
+	pte_t *pte = walk(p->pagetable, id, 1);
+	switch (trace_request)
+	{
 	case 0:
-		return *(uint8 *)id;
+		if (kid == 0 || !(*pte & PTE_R))
+			return -1;
+		else
+			return *(uint8 *)kid;
 	case 1:
-		*(uint8 *)id = data;
+		if (kid == 0 || !(*pte & PTE_W))
+			return -1;
+		else
+			*(uint8 *)kid = data;
 		return 0;
 	case 2:
-		return curr_proc()->syscall_counter[id];
+		return p->syscall_counter[id];
 	default:
 		return -1;
 	}
+}
+
+int sys_mmap(void *start, unsigned long long len, int prot, int flags)
+{
+	struct proc *p = curr_proc();
+	if (!PGALIGNED((uint64)start)) {
+		tracef("mmap failed for misaligned start: %p", start);
+		return -1;
+	}
+	if ((prot & (~0x7)) != 0 || (prot & 0x7) == 0) {
+		tracef("mmap failed for invalid prot: %d", prot);
+		return -1;
+	}
+	unsigned long long ceillen = PGROUNDUP(len);
+	int pagenum = ceillen / PGSIZE;
+	for (int i = 0; i < pagenum; ++i) {
+		if (*walk(p->pagetable, (uint64)start + i * PGSIZE, 1) &
+		    PTE_V) {
+			tracef("mmap failed for page already mapped: %p",
+			       start + i * PGSIZE);
+			return -1;
+		}
+	}
+	for (int i = 0; i < pagenum; ++i) {
+		char *mem = kalloc();
+		if (mem == 0) {
+			tracef("mmap failed for page allocation: %p",
+			       start + i * PGSIZE);
+			return -1;
+		}
+		if (mappages(p->pagetable, (uint64)start + i * PGSIZE, PGSIZE,
+			     (uint64)mem, prot << 1 | PTE_U)) {
+			tracef("mmap failed for page mapping: %p",
+			       start + i * PGSIZE);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+int sys_munmap(void *start, unsigned long long len)
+{
+	struct proc *p = curr_proc();
+	if (!PGALIGNED((uint64)start))
+		return -1;
+	unsigned long long ceillen = PGROUNDUP(len);
+	int pagenum = ceillen / PGSIZE;
+	for (int i = 0; i < pagenum; ++i) {
+		if ((*walk(p->pagetable, (uint64)start + i * PGSIZE, 1) &
+		     PTE_V) == 0)
+			return -1;
+	}
+	uvmunmap(p->pagetable, (uint64)start, pagenum, 1);
+	return 0;
 }
 
 extern char trap_page[];
@@ -93,7 +175,6 @@ void syscall()
 	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]", id, args[0],
 	       args[1], args[2], args[3], args[4], args[5]);
 	/*
-	* LAB1: you may need to update syscall counter here
 	* LAB1: you may need to update syscall counter here
 	*/
 	curr_proc()->syscall_counter[id]++;
@@ -110,14 +191,25 @@ void syscall()
 	case SYS_gettimeofday:
 		ret = sys_gettimeofday((TimeVal *)args[0], args[1]);
 		break;
+	case SYS_getpid:
+		ret = sys_getpid();
+		break;
 	case SYS_sbrk:
 		ret = sys_sbrk(args[0]);
+		break;
+	case SYS_munmap:
+		ret = sys_munmap((void *)args[0], (unsigned long long)args[1]);
+		break;
+	case SYS_mmap:
+		ret = sys_mmap((void *)args[0], (unsigned long long)args[1],
+			       (int)args[2], (int)args[3]);
 		break;
 	/*
 	* LAB1: you may need to add SYS_trace case here
 	*/
 	case SYS_trace:
-		ret = sys_trace((int)args[0], (unsigned long)args[1], (uint8)args[2]);
+		ret = sys_trace((int)args[0], (unsigned long)args[1],
+				(uint8)args[2]);
 		break;
 	default:
 		ret = -1;

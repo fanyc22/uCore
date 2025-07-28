@@ -36,6 +36,7 @@ void proc_init(void)
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = 0;
+    memset(idle.syscall_counter, 0, sizeof(idle.syscall_counter));
 	current_proc = &idle;
 }
 
